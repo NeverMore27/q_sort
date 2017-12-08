@@ -1,7 +1,10 @@
+#include <future>
+#include <thread>
 #include <iostream>
 #include <string>
 #include <mutex>
-#include <memory>
+#include <vector>
+#include <iterator>
 
 template <typename T>
 class stack
@@ -12,6 +15,8 @@ public:
 	stack(const stack<T>&) /*strong*/;
 	stack<T>& operator =(const stack<T>&) noexcept;
 	void push(T const &) /*strong*/;
+	template <typename U>
+	void emp(U && value);
 	auto pop()->std::shared_ptr<T>;
 	size_t size() const /*noexcept*/ noexcept;
 	bool empty() const /*noexcept*/ noexcept;
@@ -101,11 +106,38 @@ void stack<T>::push(T const &value)
 }
 
 template <typename T>
+template <typename U>
+void stack<T>::emp(U &&value)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (array_size_ == count_)
+	{
+		size_t array_size = array_size_ == 0 ? 1 : array_size_ * 2;
+		T *ptr = new T[array_size];
+		try
+		{
+			std::copy(array_, array_ + count_, ptr);
+		}
+		catch (...)
+		{
+			delete[] ptr;
+			throw;
+		}
+
+		array_size_ = array_size;
+		delete[] array_;
+		array_ = ptr;
+	}
+
+	array_[count_] = std::move(value);
+	++count_;
+}
+template <typename T>
 auto stack<T>::pop() -> std::shared_ptr<T>
 {
 	std::lock_guard<std::mutex> lock(mutex_);
-	if (count_ == 0) throw ("Stack is empty");
-	auto ar = std::make_shared<int>(array_[count_ - 1]);
+	if (count_ == 0) return nullptr;
+	auto ar = std::make_shared<T>(array_[count_ - 1]);
 	--count_;
 	return ar;
 }
