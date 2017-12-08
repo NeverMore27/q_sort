@@ -2,25 +2,22 @@
 #include <algorithm>
 #include <iterator>
 
-template <class Iterator>
-void quickSort(Iterator left, Iterator right)
+
+template<class Iterator>
+It partition(Iterator first, Iterator last) 
 {
-	Iterator i = left, j = right;
-	Iterator x = left;
-	while (i <= j)
+
+	auto pivot = *(last - 1);
+	auto i = first - 1;
+	for (Iterator j = first; j < last - 1; ++j) 
 	{
-		while (*i > *x) i++;
-		while (*j < *x) j--;
-		if (i <= j)
+		if (*j <= pivot) 
 		{
-			std::iter_swap(j, i);
-			i++;
-			j--;
+			++i;
+			std::iter_swap(i, j);
 		}
 	}
-	if (i<right)
-		quickSort(i, right);
+	std::iter_swap(i + 1, last - 1);
 
-	if (left<j)
-		quickSort(left, j);
+	return i + 1;
 }
