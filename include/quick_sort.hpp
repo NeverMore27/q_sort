@@ -11,153 +11,144 @@
 #include <iterator>
 #include <algorithm>
 
-template <typename T>
-class stack
+namespace jcd
 {
-public:
-	stack() /*noexcept*/ noexcept;
-	~stack()  /*noexcept*/ noexcept;
-	stack(const stack<T>&) /*strong*/;
-	stack<T>& operator =(const stack<T>&) noexcept;
-	void push(T const &) /*strong*/;
-	template <typename U>
-	void emp(U && value);
-	auto pop()->std::shared_ptr<T>;
-	size_t size() const /*noexcept*/ noexcept;
-	bool empty() const /*noexcept*/ noexcept;
-private:
-	mutable std::mutex mutex_;
-	T * array_;
-	size_t array_size_;
-	size_t count_;
-	void swap(stack<T>&) /*noexcept*/ noexcept;
-};
 
-template <typename T>
-void stack<T>::swap(stack<T>& object) noexcept
-{
-	std::lock(mutex_, object.mutex_);
-	std::swap(object.array_size_, array_size_);
-	std::swap(count_, object.count_);
-	std::swap(object.array_, array_);
-	mutex_.unlock();
-	object.mutex_.unlock();
-}
-
-template <typename T>
-stack<T>::stack() noexcept: count_{ 0 }, array_size_{ 0 }, array_{ nullptr }
-{
-}
-
-template <typename T>
-stack<T>::~stack() noexcept
-{
-	delete[] array_;
-}
-
-template <typename T>
-stack<T>::stack(const stack& object)
-{
-	std::lock_guard<std::mutex> lock(object.mutex_);
-	array_size_ = object.array_size_;
-	count_ = object.count_;
-	array_ = new T[count_];
-	try
+	template <typename BidirectionalIterator>
+	class parallel_quick_sorter_t 
 	{
-		std::copy(object.array_, object.array_ + count_, array_);
-	}
-	catch (...)
-	{
-		delete[] array_;
-		throw;
-	}
-}
-
-template <typename T>
-stack<T>& stack<T>:: operator =(const stack<T>&object) noexcept
-{
-	if (this != &object)
-	{
-		stack{ object }.swap(*this);
-	}
-	return *this;
-}
-
-template <typename T>
-void stack<T>::push(T const &value)
-{
-	std::lock_guard<std::mutex> lock(mutex_);
-	if (array_size_ == count_)
-	{
-		size_t array_size = array_size_ == 0 ? 1 : array_size_ * 2;
-		T *ptr = new T[array_size];
-		try
+	private:
+		struct chunk_to_sort_t 
 		{
-			std::copy(array_, array_ + count_, ptr);
-		}
-		catch (...)
-		{
-			delete[] ptr;
-			throw;
-		}
+			BidirectionalIterator first;
+			BidirectionalIterator last;
+			std::promise<void> promise;
+		};
 
-		array_size_ = array_size;
-		delete[] array_;
-		array_ = ptr;
-	}
+	public:
+		parallel_quick_sorter_t();
+		parallel_quick_sorter_t(parallel_quick_sorter_t const & other) = delete;
+		auto operator =(parallel_quick_sorter_t const & other)->parallel_quick_sorter_t & = delete;
+		parallel_quick_sorter_t(parallel_quick_sorter_t && other) = delete;
+		auto operator =(parallel_quick_sorter_t && other)->parallel_quick_sorter_t & = delete;
+		~parallel_quick_sorter_t();
 
-	array_[count_] = value;
-	++count_;
-}
+		void do_sort(BidirectionalIterator first, BidirectionalIterator last);
+		void sort_thread();
+		void try_sort_chunk();
+		void sort_chunk(std::shared_ptr<chunk_to_sort_t> chunk);
 
-template <typename T>
-template <typename U>
-void stack<T>::emp(U &&value)
-{
-	std::lock_guard<std::mutex> lock(mutex_);
-	if (array_size_ == count_)
+	private:
+		std::vector<std::thread> threads_;
+		unsigned int const max_threads_count_;
+		stack<std::shared_ptr<chunk_to_sort_t>> chunks_;
+		std::atomic<bool> end_of_data_;
+		mutable std::mutex mutex_;
+		void thread_change();
+	};
+
+
+
+	template <typename BidirectionalIterator>
+	parallel_quick_sorter_t<BidirectionalIterator>::
+	parallel_quick_sorter_t()
+		:
+		max_threads_count_{ std::thread::hardware_concurrency() - 1 },
+		end_of_data_{ false } 
 	{
-		size_t array_size = array_size_ == 0 ? 1 : array_size_ * 2;
-		T *ptr = new T[array_size];
-		try
-		{
-			std::copy(array_, array_ + count_, ptr);
-		}
-		catch (...)
-		{
-			delete[] ptr;
-			throw;
-		}
 
-		array_size_ = array_size;
-		delete[] array_;
-		array_ = ptr;
 	}
 
-	array_[count_] = std::move(value);
-	++count_;
-}
-template <typename T>
-auto stack<T>::pop() -> std::shared_ptr<T>
-{
-	std::lock_guard<std::mutex> lock(mutex_);
-	if (count_ == 0) return nullptr;
-	auto ar = std::make_shared<T>(array_[count_ - 1]);
-	--count_;
-	return ar;
-}
+	template <typename BidirectionalIterator>
+	parallel_quick_sorter_t<BidirectionalIterator>::
+	~parallel_quick_sorter_t() 
+	{
+		end_of_data_ = true;
+		for (auto && th : threads_)
+		{
+			th.join();
+		}
+	}
 
-template <typename T>
-size_t stack<T>::size() const noexcept
-{
-	std::lock_guard<std::mutex> lock(mutex_);
+	template <typename BidirectionalIterator>
+	void 
+	parallel_quick_sorter_t<BidirectionalIterator>::
+	do_sort(BidirectionalIterator first, BidirectionalIterator last) 
+	{
+		if (!(first < last - 1)) 
+		{
+			return;
+		}
+		auto partition_ptr = partition(first, last);
+		auto _chunk = std::make_shared<chunk_to_sort_t>(chunk_to_sort_t{ first, partition_ptr });
+		auto left_task = _chunk->promise.get_future();
+		chunks_.push(_chunk);
+		thread_change();
+		do_sort(partition_ptr, last);
+		while (left_task.wait_for(std::chrono::seconds(0)) != std::future_status::ready) 
+		{
+			try_sort_chunk();
+		}
+	}
 
-	return count_;
-}
+	template <typename BidirectionalIterator>
+	void 
+	parallel_quick_sorter_t<BidirectionalIterator>::
+	try_sort_chunk() 
+	{
+		auto chunk = chunks_.pop();
+		if (chunk) 
+		{
+			sort_chunk(*chunk);
+		}
+	}
 
-template <typename T>
-bool stack<T>::empty() const noexcept
-{
-	std::lock_guard<std::mutex> lock(mutex_);
-	return count_ == 0;
+	template <typename BidirectionalIterator>
+	void 
+	parallel_quick_sorter_t<BidirectionalIterator>::
+	sort_thread() 
+	{
+		while (!end_of_data_) 
+		{
+			try_sort_chunk();
+			std::this_thread::yield();
+		}
+	}
+
+	template <typename BidirectionalIterator>
+	void 
+	parallel_quick_sorter_t<BidirectionalIterator>::
+	sort_chunk(std::shared_ptr<chunk_to_sort_t> chunk) 
+	{
+		do_sort(chunk->first, chunk->last);
+		chunk->promise.set_value();
+	}
+
+	template <typename BidirectionalIterator>
+	void 
+	parallel_quick_sort(BidirectionalIterator first, BidirectionalIterator last) 
+	{
+
+		if (first == last) 
+		{
+			return;
+		}
+
+		parallel_quick_sorter_t<BidirectionalIterator> sorter;
+		sorter.do_sort(first, last);
+	}
+
+	template <typename BidirectionalIterator>
+	void
+		parallel_quick_sorter_t<BidirectionalIterator>::
+		thread_change() 
+		{
+
+			std::lock_guard<std::mutex> lock(mutex_);
+			if (threads_.size() < max_threads_count_) 
+			{
+				threads_.push_back(std::thread{ &parallel_quick_sorter_t<BidirectionalIterator>::sort_thread, this });
+			}
+
+	}
 }
