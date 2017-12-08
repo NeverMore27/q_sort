@@ -4,7 +4,7 @@
 
 
 template<class Iterator>
-It partition(Iterator first, Iterator last) 
+Iterator partition(Iterator first, Iterator last) 
 {
 
 	auto pivot = *(last - 1);
